@@ -8,7 +8,7 @@ exps_path: exps
 use_vqvae: False
 use_clip: openai/clip-vit-large-patch14
 encoder_output_size: 1024
-encoder_path: null
+encoder_path: exps/first_train/encoder.pt
 num_context_vision: 8
 prompt_depth_vision: 12
 dim_context_vision: 1024
@@ -17,15 +17,16 @@ prompt_depth_text: 12
 dim_context_text: 768
 
 # projection
-projection_path: null
+projection_path: exps/first_train/project.pt
 
 # LLM
-test_files: [/path/to/data/psr_qa.json] # /path/to/data/avocado_qa.json
+test_files: [processed_data/psr_qa.json] # /path/to/data/avocado_qa.json
 model_type: vicuna-7b
-quantized: False
+quantized: True
+bnb_4bit: True
 offload_dir: ./
 cutoff_len: 256
-lora_trained: True
+lora_trained: False
 tokenizer_path: null
 llm_path: null
 

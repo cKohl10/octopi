@@ -39,15 +39,26 @@ def process_user_input(user_input, image_processor, model, tokenizer, device):
     question_embeds = []
     for chunk in user_input:
         if "[" not in chunk:
-            question_embeds.append(model.llm.get_input_embeddings()(torch.unsqueeze(torch.tensor(tokenizer.encode(chunk))[1:], 0).to(device)))
+            # Keep tokens as Long type for embedding layer
+            tokens = torch.unsqueeze(torch.tensor(tokenizer.encode(chunk))[1:], 0).to(device)
+            # Convert to float16 after embedding
+            embeddings = model.llm.get_input_embeddings()(tokens).to(torch.float16)
+            question_embeds.append(embeddings)
         else:
-            question_embeds.append(model.llm.get_input_embeddings()(torch.unsqueeze(torch.tensor(tokenizer.encode("<tact_start>"))[1:], 0).to(device)))
+            tokens = torch.unsqueeze(torch.tensor(tokenizer.encode("<tact_start>"))[1:], 0).to(device)
+            embeddings = model.llm.get_input_embeddings()(tokens).to(torch.float16)
+            question_embeds.append(embeddings)
+            
             frames, indices = get_frames(chunk[1:-1], image_processor, None, return_indices=True)
-            tactile_tensors = torch.unsqueeze(frames, dim=0).to(device) # (1, l, c, h, w)
-            sinusoidal_embeds = sinusoidal_positional_embedding(token_sequence_size=5, indices=indices, token_embedding_dim=1024, batch_size=tactile_tensors.shape[0]).to(tactile_tensors.device)
+            tactile_tensors = torch.unsqueeze(frames, dim=0).to(device).to(torch.float16)
+            sinusoidal_embeds = sinusoidal_positional_embedding(token_sequence_size=5, indices=indices, token_embedding_dim=1024, batch_size=tactile_tensors.shape[0]).to(tactile_tensors.device).to(torch.float16)
             tactile_embeds = model.project(model.encoder(tactile_tensors) + sinusoidal_embeds)
             question_embeds.append(tactile_embeds)
-            question_embeds.append(model.llm.get_input_embeddings()(torch.unsqueeze(torch.tensor(tokenizer.encode("<tact_end>"))[1:], 0).to(device)))
+            
+            tokens = torch.unsqueeze(torch.tensor(tokenizer.encode("<tact_end>"))[1:], 0).to(device)
+            embeddings = model.llm.get_input_embeddings()(tokens).to(torch.float16)
+            question_embeds.append(embeddings)
+            
     question_embeds = torch.cat(question_embeds, dim=1)
     return question_embeds
 
@@ -64,13 +75,32 @@ def main(configs, exp_name):
         tokenizer_path = "lmsys/vicuna-13b-v1.5"
         model_path = "lmsys/vicuna-13b-v1.5"
 
-    # model GPU setup
-    bnb_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_use_double_quant=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.float16,
-    )
+    # model GPU setup (original)
+    # bnb_config = BitsAndBytesConfig(
+    #     load_in_4bit=True,
+    #     bnb_4bit_use_double_quant=True,
+    #     bnb_4bit_quant_type="nf4",
+    #     bnb_4bit_compute_dtype=torch.float16,
+    # )
+
+    if configs["quantized"]:
+        if configs["bnb_4bit"]:
+            # 4-bit quantization setup
+            bnb_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_compute_dtype=torch.float16,
+                llm_int8_enable_fp32_cpu_offload=True
+            )
+        else:
+            # 16-bit quantization setup
+            bnb_config = BitsAndBytesConfig(
+                load_in_8bit=False,
+                load_in_4bit=False,
+                bnb_4bit_compute_dtype=torch.float16
+            )
+
     if configs["gpu_config"] is not None:
         if configs["tokenizer_path"] is not None:
             tokenizer_path = configs["tokenizer_path"]
@@ -90,10 +120,10 @@ def main(configs, exp_name):
         )
         if configs["lora_trained"]:
             if configs["quantized"]:
-                llm = AutoModelForCausalLM.from_pretrained(model_path, device_map=device_map, offload_folder=configs["offload_dir"]) # , quantization_config=bnb_config)
+                llm = AutoModelForCausalLM.from_pretrained(model_path, device_map=device_map, offload_folder=configs["offload_dir"], quantization_config=bnb_config)
             else:
                 llm = AutoModelForCausalLM.from_pretrained(model_path, device_map=device_map, offload_folder=configs["offload_dir"])
-            tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, use_auth_token=True, padding_side="left")
+            tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, padding_side="left")
             # NOTE: https://jaotheboss.medium.com/domain-training-your-llm-6c77f53e3e27
             new_tokens = ['<tact_start>', '<tact_end>']
             add_new_tokens(llm, tokenizer, new_tokens)
@@ -125,9 +155,13 @@ def main(configs, exp_name):
             clip = PromptLearningCLIPModel.from_pretrained(configs["use_clip"], configs).to(device)
             model.encoder.model.vision_model = clip.vision_model
             model.encoder.load_state_dict(torch.load(configs["encoder_path"]), strict=False)
+        # Convert CLIP model to float16
+        model.encoder = model.encoder.to(torch.float16)
     if configs["projection_path"] is not None:
         # if there is a trained encoder specified
         model.project.load_state_dict(torch.load(configs["projection_path"]))
+        # Convert projection layer to float16
+        model.project = model.project.to(torch.float16)
 
     # interact with LLM
     test_files = configs["test_files"]
@@ -144,11 +178,13 @@ def main(configs, exp_name):
                 for q in range(2):
                     if q == 0:
                         prompt_pre = "A chat between a curious user and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the user's questions.\n\nUSER: "
-                        prompt_pre_tokens = torch.unsqueeze(torch.tensor(tokenizer.encode(prompt_pre))[1:], 0).to(device) # NOTE: remove BOS token
-                        prompt_pre_embeds_start = llm.get_input_embeddings()(prompt_pre_tokens)
+                        # Keep tokens as Long type for embedding layer
+                        prompt_pre_tokens = torch.unsqueeze(torch.tensor(tokenizer.encode(prompt_pre))[1:], 0).to(device)
+                        # Convert to float16 after embedding
+                        prompt_pre_embeds_start = llm.get_input_embeddings()(prompt_pre_tokens).to(torch.float16)
                         prompt_post = f"\nASSISTANT:"
-                        prompt_post_tokens = torch.unsqueeze(torch.tensor(tokenizer.encode(prompt_post))[1:], 0).to(device) # NOTE: remove BOS token
-                        prompt_post_embeds = llm.get_input_embeddings()(prompt_post_tokens)
+                        prompt_post_tokens = torch.unsqueeze(torch.tensor(tokenizer.encode(prompt_post))[1:], 0).to(device)
+                        prompt_post_embeds = llm.get_input_embeddings()(prompt_post_tokens).to(torch.float16)
                         user_input = d[1]["content"]
                         tactile_images = d[1]["tactile"]
                         tactile_idx = 0
