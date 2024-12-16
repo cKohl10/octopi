@@ -1,5 +1,5 @@
 # general
-data_dir: data
+data_dir: processed_data
 cuda: 0
 seed: 0
 exps_path: exps

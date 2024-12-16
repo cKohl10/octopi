@@ -42,16 +42,34 @@ def train(configs, exp_name, g):
     elif configs["model_type"] == "vicuna-13b":
         tokenizer_path = "lmsys/vicuna-13b-v1.5"
         model_path = "lmsys/vicuna-13b-v1.5"
-    
+    elif configs["model_type"] == "phi-2":
+        tokenizer_path = "microsoft/phi-2"
+        model_path = "microsoft/phi-2"
+    elif configs["model_type"] == "phi-3":
+        tokenizer_path = "microsoft/Phi-3.5-mini-instruct"
+        model_path = "microsoft/Phi-3.5-mini-instruct"
+    elif configs["model_type"] == "llama-3.2-1B":
+        tokenizer_path = "meta-llama/Llama-3.2-1B-Instruct-QLORA_INT4_EO8"
+        model_path = "meta-llama/Llama-3.2-1B-Instruct-QLORA_INT4_EO8"
     # model GPU and tokenizer setup
     os.makedirs(configs["offload_dir"], exist_ok=True)
     if configs["quantized"]:
-        bnb_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_use_double_quant=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=torch.float16,
-        )
+        if configs["bnb_4bit"]:
+            # 4-bit quantization setup
+            bnb_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_compute_dtype=torch.float16,
+                llm_int8_enable_fp32_cpu_offload=True
+            )
+        else:
+            # 16-bit quantization setup
+            bnb_config = BitsAndBytesConfig(
+                load_in_8bit=False,
+                load_in_4bit=False,
+                bnb_4bit_compute_dtype=torch.float16
+            )
     if configs["gpu_config"] is not None:
         if configs["tokenizer_path"] is not None:
             tokenizer_path = configs["tokenizer_path"]
@@ -74,7 +92,7 @@ def train(configs, exp_name, g):
                 llm = AutoModelForCausalLM.from_pretrained(model_path, device_map=device_map, offload_folder=configs["offload_dir"], quantization_config=bnb_config)
             else:
                 llm = AutoModelForCausalLM.from_pretrained(model_path, device_map=device_map, offload_folder=configs["offload_dir"])
-            tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, use_auth_token=True, padding_side="left")
+            tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, padding_side="left")
             # reference: https://jaotheboss.medium.com/domain-training-your-llm-6c77f53e3e27
             add_new_tokens(llm, tokenizer, new_tokens)
             if configs["quantized"]:

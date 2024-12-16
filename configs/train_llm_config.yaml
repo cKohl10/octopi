@@ -1,11 +1,11 @@
 # general
-data_dir: data
+data_dir: processed_data
 gpu_config: configs/gpu_config_7b.json
 cuda: 0
 seed: 0
 exps_path: exps
-train: True
-val: False
+train: False
+val: True
 test: True
 
 # frame processing
@@ -15,7 +15,7 @@ flip_p: 0.5
 use_vqvae: False
 use_clip: openai/clip-vit-large-patch14
 freeze_encoder: True
-encoder_path: null
+encoder_path: models/7b/encoder.pt
 encoder_output_size: 1024
 num_context_vision: 8
 prompt_depth_vision: 12
@@ -27,28 +27,35 @@ dim_context_text: 768
 # projection
 freeze_projection: False
 projection_lr: 0.0002
-projection_path: null
+projection_path: models/7b/project.pt
 
 # LLM
-train_files: [/path/to/data/train_qa.json]
-val_files: [/path/to/data/val_opd_qa.json]
-test_files: [/path/to/data/test_qa.json, /path/to/data/test_opd_qa.json]
-model_type: vicuna-7b
+train_files: [processed_data/train_qa.json]
+val_files: [processed_data/val_opd_qa.json]
+test_files: [processed_data/test_qa.json]
+model_type: vicuna-7b #instead of phi-2
 cutoff_len: 512
-offload_dir: ./
+offload_dir: offload # offload
 llm_lr: 0.0002
-quantized: False
-tokenizer_path: null
-llm_path: null
+quantized: True
+bnb_4bit: True
+tokenizer_path: models/7b/tokenizer
+llm_path: models/7b/llm_weights
 ## LoRA
-lora_trained: False
-use_lora: False
-lora_alpha: 256
-r: 128
+lora_trained: True
+use_lora: True
+lora_alpha: 64 #256
+r: 32 #128
 lora_dropout: 0.05
-target_modules:
+target_modules: # Vicuna
   - q_proj
   - k_proj
+# target_modules: # Phi-2
+#   - Wqkv    # Combined query-key-value projection
+#   - out_proj # Output projection from attention
+#   # - fc1     # First feed-forward layer
+#   # - fc2     # Second feed-forward layer
+
 modules_to_save:
   - embed_tokens
 bias: none
