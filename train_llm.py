@@ -18,7 +18,7 @@ from datetime import datetime
 import sys
 from transformers import CLIPImageProcessor
 from transformers.utils import logging
-
+import argparse
 
 def add_new_tokens(llm, tokenizer, new_tokens):
     new_tokens = list(set(new_tokens) - set(tokenizer.vocab.keys()))
@@ -31,6 +31,7 @@ def add_new_tokens(llm, tokenizer, new_tokens):
 
 
 def train(configs, exp_name, g):
+    print(f"Beginning training")
     # device
     device = f'cuda:{configs["cuda"]}' # for inputs and model if not device_map
     new_tokens = ['<tact_start>', '<tact_end>']
@@ -49,8 +50,9 @@ def train(configs, exp_name, g):
         tokenizer_path = "microsoft/Phi-3.5-mini-instruct"
         model_path = "microsoft/Phi-3.5-mini-instruct"
     elif configs["model_type"] == "llama-3.2-1B":
-        tokenizer_path = "meta-llama/Llama-3.2-1B-Instruct-QLORA_INT4_EO8"
-        model_path = "meta-llama/Llama-3.2-1B-Instruct-QLORA_INT4_EO8"
+        tokenizer_path = "meta-llama/Llama-3.2-1B"
+        model_path = "meta-llama/Llama-3.2-1B"
+
     # model GPU and tokenizer setup
     os.makedirs(configs["offload_dir"], exist_ok=True)
     if configs["quantized"]:
@@ -101,6 +103,7 @@ def train(configs, exp_name, g):
                 llm = PeftModel.from_pretrained(model=llm, model_id=configs["llm_path"], is_trainable=False, device_map="auto", max_memory=gpu_max_mem_config)
         else:
             if configs["quantized"]:
+
                 llm = AutoModelForCausalLM.from_pretrained(model_path, device_map=device_map, offload_folder=configs["offload_dir"], quantization_config=bnb_config)
             else:
                 llm = AutoModelForCausalLM.from_pretrained(model_path, device_map=device_map, offload_folder=configs["offload_dir"])
@@ -131,7 +134,7 @@ def train(configs, exp_name, g):
     else:
         model = MultimodalLLMForCausalLM(clip_model=configs["use_clip"], encoder_output_size=configs["encoder_output_size"], tokenizer=tokenizer, cutoff_len=configs["cutoff_len"], llm=llm, use_vqvae=configs["use_vqvae"], device=device)
     model.to(device)
-
+    
     # 1) LLM setup
     if configs["use_lora"]:
         ## LoRA
@@ -147,10 +150,15 @@ def train(configs, exp_name, g):
         )
         llm_weights_path = f"{configs['exps_path']}/{exp_name}/llm_weights"
         if not os.path.exists(llm_weights_path):
-            os.makedirs(llm_weights_path)
-            llm_peft = get_peft_model(llm, peft_config)
-            llm_peft.save_pretrained(llm_weights_path)
-            llm_peft = None
+            try:
+                os.makedirs(llm_weights_path)
+                llm_peft = get_peft_model(llm, peft_config)
+                llm_peft.save_pretrained(llm_weights_path)
+                llm_peft = None
+            except Exception as e:
+                print(f"Error saving LoRA weights: {e}")
+                print(f"Model layers are {llm}")
+                raise e
         if configs["quantized"]:
             llm = PeftModel.from_pretrained(model=llm, model_id=llm_weights_path, is_trainable=True, device_map="auto", max_memory=gpu_max_mem_config, quantization_config=bnb_config)
         else:
@@ -214,7 +222,6 @@ def train(configs, exp_name, g):
 
     # training
     if configs["train"]:
-        # get trainable/non-trainable model parameter stats
         model.train()
         trainable_model_parameters = filter(lambda p: p.requires_grad, model.parameters())
         trainable_params = sum([np.prod(p.size()) for p in trainable_model_parameters])
@@ -336,8 +343,20 @@ def train(configs, exp_name, g):
 
 
 if __name__ == "__main__":
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--model_type', type=str, default='none', help='Type of model to use')
+    parser.add_argument('--train_type', type=str, default='none', help='Type of training to use')
+    parser.add_argument('--named', type=str, default='', help='Name of experiment')
+    args = parser.parse_args()
+
+    print(f"Beginning execution...")
+
+    model_type = args.model_type
+    train_type = args.train_type
+    named = args.named
     exp_type = f"train_llm"
-    config_path = f'configs/{exp_type}_config.yaml'
+    config_path = f'configs/{exp_type}_config_{model_type}_{train_type}.yaml'
     # get configs
     with open(config_path, 'r') as file:
         configs = yaml.safe_load(file)
@@ -352,17 +371,20 @@ if __name__ == "__main__":
     exp_type = exp_type + f"_{configs['model_type']}"
     if configs["train"]:
         exp_type += f"_{configs['max_train_steps']}"
-    exp_id = input("Identifier for experiment: ")
+    exp_id = '' # input("Identifier for experiment: ")
     if len(exp_id) > 0:
         exp_id = exp_type + f"_{exp_id}"
     else:
         exp_id = exp_type
 
     # make stats and weights folders
-    now = datetime.now()
-    exp_name = now.strftime("%Y_%m_%d_%H_%M_%S")
-    exp_name = exp_name + "_" + exp_id
-    print(f"\n{exp_name}\n")
+    if len(named) > 1:
+        exp_name = named
+    else:
+        now = datetime.now()
+        exp_name = now.strftime("%Y_%m_%d_%H_%M_%S")
+        exp_name = exp_name + "_" + exp_id
+        print(f"\n{exp_name}\n")
     os.makedirs(f"{configs['exps_path']}", exist_ok=True)
     os.makedirs(f"{configs['exps_path']}/{exp_name}", exist_ok=True)
     with open(f"{configs['exps_path']}/{exp_name}/{exp_type}_config.yaml", 'w') as file:

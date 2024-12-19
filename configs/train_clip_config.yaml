@@ -9,12 +9,13 @@ flip_p: 0.5
 
 # encoder
 use_clip: openai/clip-vit-large-patch14
-num_epochs: 2
+num_epochs: 50
 lr: 0.001
 classifier_lr: 0.001
 batch_size: 2
 gradient_accumulation_steps: 2
 output_size: 1024
+quantized: False
 
 # prompt learning
 prompt_learning: True
